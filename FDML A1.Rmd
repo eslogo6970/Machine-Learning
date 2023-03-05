@@ -1,0 +1,469 @@
+---
+title: "FDML A1: Asset Pricing Model"
+author: "Esteban"
+date: "2/3/2023"
+output: 
+  pdf_document: 
+    latex_engine: xelatex
+---
+
+# Introduction
+
+In order to develop an asset pricing model it is first essential to choose an asset whose price is going to be predicted. For the present project, the group has chosen Apple stock that is going to be studied from January 2013 to December 2022 in a monthly basis in order to calculate its logarithmic returns. The chosen methodology, then, starts with the data curation and data description, followed by the models training, testing and conclusions.
+
+# Data Collection and curation
+Firstly, in order to predict the logaritmic returns of Apple it is proposed a six-factor model formed from the five-factor FamaFrench (2015) model and momentum (Carhart, 1997). For the case of the stock, the monthly prices are taken from Yahoo finance starting with december 2012 in order to have returns data from January 2013 to December 2022. The factors monthly data was taken from Kenneth French’s online database. For the case of factors expressed in interest rates had to be divided by 100 because they were expressed in percentage but in order to be comparables to the calculated logarithmic return of Apple they neede to be in decimals. Additionally, all the variables had to be changed from string format to numeric format.
+
+The factors are then defined as it follows:
+
+* Mkt-Rf is the market risk premium
+* SMB is the risk premium between stocks with small and big market capitalization
+* HML captures the risk premium between stocks with a high and low book-to-market ratio
+* RMW is a corporate operating profitability factor, called Robust Minus Weak
+* CMA, called Conservative Minus Aggressive, focuses on corporate investment
+* Mom is the Carhart’s momentum factor (Carhart, 1997)
+
+# Data Exploration
+
+
+````{r Step 1, warning=FALSE,message=FALSE,include=FALSE}
+library(readr)
+library(tibble)
+library(stringr)
+library(tidyquant)
+library(dplyr)
+library(leaps)
+library(glmnet)
+library(tidyr)
+library(GGally)
+library(ISLR)
+library(MASS)
+library(gt)
+
+#Import the Fama file and skipping the first 2 useless columns
+Fama <- read_csv("https://raw.githubusercontent.com/eslogo6970/Machine-Learning/main/F-F_Research_Data_5_Factors_2x3.csv", skip = 2)
+
+#Import the Mom file and formatting it 
+Mom <- read_csv("https://raw.githubusercontent.com/eslogo6970/Machine-Learning/main/F-F_Momentum_Factor.CSV", skip = 12)
+
+#Add an empty column for the Excess return calculation
+Fama <- add_column(Fama, 'ER'= NA, .after = 1)
+
+#Change 1st column name to 'Date'
+colnames(Fama)[1]  <- "Date"  
+colnames(Mom)[1]  <- "Date" 
+
+#Remove the dates that aren't %YYYY%mm format 
+Fama = Fama[str_length(Fama$Date)== 6, ]
+Mom = Mom[str_length(Mom$Date)== 6, ]
+
+#Remove the dates that are before 2013-01 
+Fama = Fama[Fama$Date>= 201212, ]
+Mom = Mom[Mom$Date>= 201212, ]
+
+#Remove the useless NA row in the column Date
+Fama = Fama[!is.na(Fama$Date),]
+Mom = Mom[!is.na(Mom$Date),]
+
+# Download stock price 
+getSymbols("AAPL",src='yahoo', from = '2012-12-01', to = "2022-12-31",warnings = FALSE, auto.assign = TRUE, periodicity="monthly")
+
+#Only take the Close adjusted price of the stock 
+AAPL = AAPL$AAPL.Adjusted
+
+#Combine the Fama and Stock price 
+Fama = cbind(Fama,Mom)
+Final = cbind(Fama,AAPL)
+
+#Remove the Date column 
+Final <- Final[ ,  !names(Final) %in% c("Date")]
+
+#Compute the Excess return
+n <- length(Final$AAPL.Adjusted)
+Final$ER[2:n]=log(Final$AAPL.Adjusted[-1]/Final$AAPL.Adjusted[-n])
+
+#Deduct the risk free rate from the excess return
+Final$RF=as.numeric(Final$RF)/100
+Final$`Mkt-RF`=as.numeric(Final$`Mkt-RF`)/100
+Final$SMB=as.numeric(Final$SMB)/100
+Final$HML=as.numeric(Final$HML)/100
+Final$RMW=as.numeric(Final$RMW)/100
+Final$CMA=as.numeric(Final$CMA)/100
+
+Final$`ER` <- Final$`ER`-Final$RF
+
+#Remove the 2011 Dec data (we just needed it to compute the 2012 Jan Excess return)
+Final <- Final[!(row.names(Final) %in% c("2012-12-01")),]
+
+#Extract the date as a column
+Final$Date=rownames(Final)
+rownames(Final) <- NULL
+Final <- Final[,c(10,1,2,3,4,5,6,7,8,9)]
+
+````
+
+
+````{r Step 2,warning=FALSE, echo=FALSE}
+#Download the data frame Final 
+#write.csv(Final, "data.full.csv", row.names=FALSE, quote=FALSE)
+data.full=Final
+````
+
+## Boxplots with interest-rate variables (SMB, HML, RMW, CMA, Mkt-Rf, ER)
+
+```{r,warning=FALSE, echo=FALSE}
+dat <- pivot_longer(data.full,c("SMB", "HML","RMW","CMA", "ER", "Mkt-RF"))
+
+ggplot(dat,# Draw boxplots 
+       aes(x = value,fill = name)) +
+  geom_boxplot()
+```
+
+## Boxplots with non-interest-rate variables (Mom)
+
+
+```{r,warning=FALSE, echo=FALSE}
+
+dat <- pivot_longer(data.full,c("Mom"))
+
+ggplot(dat,# Draw boxplots 
+       aes(x = value,fill = name)) +
+  geom_boxplot()
+
+
+```
+
+Considering the boxplot figures, it can be first concluded that the variable with higher range is the time series of Apple's risk premium with a maximum near 20% and a minimum near -15% compared to a maximum near 10% and a minimum near -7% of the market risk premium. 
+
+In terms of medians, it could be said that Apple's risk premium has the highest median among all the variables mainly because most variables have their medians close to 0, even for Mom that is not a variable in terms of rate.
+
+
+## Correlation matrix, scatter and distrbution plots
+
+
+```{r Step 3,warning=FALSE, echo=FALSE}
+#summary(data.full[,-1])
+#var(data.full[,-1])
+#cor(data.full[,-1])
+ggpairs(data.full[,-1])
+```
+
+Regarding correlations, the highest linearly-related variables are the couples ER* & Mkt* and HML & CMA both with correlations higher than 0.6. The first couple of variables could be understood as the CAPM model given the fact that analyzes both market and stock risk premiums. In that matter, it can be seen the relationship between the movement of the market and Apple's stock because of the market capitalization of Apple that nowadays is the highest a company has in the world. The second correlation is between the market size risk premium and the difference between conservative and aggressive investments.
+
+## Series through time
+
+```{r,warning=FALSE, echo=FALSE}
+datatemp=data.full
+datatemp$Date=as.Date(datatemp$Date)
+datatemp$acumER=cumsum(datatemp$ER)
+datatemp$acumMkt=cumsum(datatemp$`Mkt-RF`)
+
+ggplot(datatemp, aes(x=Date)) +  
+  scale_color_discrete(name="Rate")+
+  ylab("Rate")+
+  geom_line(aes(y=ER,colour = "Apple risk premium")) +   theme_bw()+
+  geom_line(aes(y=`Mkt-RF`,colour = "Mkt risk premium"))
+```
+
+
+```{r,warning=FALSE, echo=FALSE}
+ggplot(datatemp, aes(x=Date),colour="Interest rate") + 
+  scale_color_discrete(name="Rate")+
+   ylab("Accum. Rate")+
+  geom_line(aes(y=acumER,colour = "Accum. Apple risk premium")) +  theme_bw()+
+  geom_line(aes(y=acumMkt,colour = "Accum. Market risk premium"))
+```
+
+Analyzing both variables monthly and accumulated, one can say that changes in the market are clearly seen in the behavior of the stock but with a different level. The previous is the case for 2019 and 2020 falls and 2021 growth.
+
+
+
+````{r Step 4,warning=FALSE, echo=FALSE}
+data.train <- data.full[c(1:96),]
+data.test <- data.full[c(97:120),]
+````
+
+# Preliminar Multiple Linear Regression
+
+After exploring the data, a preliminar multiple linear regression is run in order to first find the resulting coefficients to predict Apple's risk premium, their reliability and finally select the factors that are representative and maximize the reliability of the model using as indicators the R squared, confidence levels, p-values and F statistics.
+
+````{r Step 5,warning=FALSE, echo=FALSE}
+lm.fit <- lm(ER~.-RF-AAPL.Adjusted-Date, data = data.full)
+n=summary(lm.fit)
+cof=as.data.frame(n$coefficients)
+cof <- tibble::rownames_to_column(cof, "Variable")
+cof$Variable[1]="Intercept"
+gt::gt(cof)
+````
+
+## Confidence intervals
+
+````{r Step 6,warning=FALSE, echo=FALSE}
+m=as.data.frame(confint(lm.fit, level = 0.95))
+m <- tibble::rownames_to_column(m, "Variable")
+m$Variable[1]="Intercept"
+gt::gt(m)
+#predict(lm.fit,data.frame(data.full=(c(3,4,5,6,7,9))),interval = "confidence")
+````
+
+
+Regarding the preliminar data, it can be concluded that there are 3 factors that are representattive because of their p values and their confidence intervals. In that sense, the variable with the lowest p-value is Mkt-RF, then go RMW and HML, meaning that they have the lowest probability of being non-representative for the model (null hypothesis). However, for the case of HML is representativeness could be doubted because the probability of being representative is approximately of 93,6% while the other two factors are higher than 99%.
+
+Additionaly, Mkt-RF and RMW are the only variables than don't include the 0 as possible coefficient with a 95% certainty considering the confidence intervals. For the case of HML, the confidence interval proof is unclear given the fact that it includes slightly the 0 in the interval. 
+
+# Factor selection
+
+In order to choose a definitive multiple linear regression it is relevant to choose the set of factors that improves the model reliability. Then,  three approaches to linear model selection are used : Best subset selection, forward stepwise selection, Backward stepwise selection, giving each approach the best model for n number-of-variables model.
+
+
+
+````{r Step 7,warning=FALSE, echo=FALSE}
+#1. What is the optimal model based on best subset selection?
+model_best = regsubsets(ER~.-RF-AAPL.Adjusted-Date, data = data.full, nvmax = 6)
+sbest=summary(model_best)
+#2. What is the optimal model based on forward stepwise selection?
+model_fwd = regsubsets(ER~.-RF-AAPL.Adjusted-Date, data = data.full, nvmax = 6, method = "forward")
+sfwd=summary(model_fwd)
+
+#3. What is the optimal model based on backward stepwise selection?
+model_bwd = regsubsets(ER~.-RF-AAPL.Adjusted-Date, data = data.full, nvmax = 6, method = "backward")
+sbwd=summary(model_bwd)
+
+#4. Is the optimal model the same for all three linear model selection approach? If not,
+#which model is best? 
+````
+
+## Optimal model based on best subset selection
+
+```{r,warning=FALSE, echo=FALSE}
+f=as.data.frame(sbest$outmat)
+f <- tibble::rownames_to_column(f, "Number of variables")
+#f
+gt::gt(f)
+```
+
+## Optimal model based on forward stepwise selection
+
+```{r,warning=FALSE, echo=FALSE}
+f=as.data.frame(sfwd$outmat)
+f <- tibble::rownames_to_column(f, "Number of variables")
+#f
+gt::gt(f)
+```
+
+## Optimal model based on backward stepwise selection
+
+```{r,warning=FALSE, echo=FALSE}
+f=as.data.frame(sbwd$outmat)
+f <- tibble::rownames_to_column(f, "Number of variables")
+#f
+gt::gt(f)
+```
+
+
+After looking at the results, clearly all the approaches lead to the same optimal set of variables for each model with n variables. Meaning that the last choice to make is the number of variables for the definitive model. For that, the proposed idea for choosing the number of variables is to do it considering Cp, BIC and adjuster R Squared as a function of the number of variables as it follows:
+
+
+```{r optimal,warning=FALSE, echo=FALSE}
+# Set up a 2x2 grid so we can look at 4 plots at once
+par(mfrow = c(2,2))
+plot(sbest$rss, xlab = "Number of Variables", ylab = "RSS", type = "l")
+plot(sbest$adjr2, xlab = "Number of Variables", ylab = "Adjusted RSq", type = "l")
+
+# We will now plot a red dot to indicate the model with the largest adjusted R^2 statistic.
+# The which.max() function can be used to identify the location of the maximum point of a vector
+adj_r2_max = which.max(sbest$adjr2) # 11
+
+# The points() command works like the plot() command, except that it puts points 
+# on a plot that has already been created instead of creating a new plot
+points(adj_r2_max, sbest$adjr2[adj_r2_max], col ="red", cex = 2, pch = 20)
+
+# We'll do the same for C_p and BIC, this time looking for the models with the SMALLEST statistic
+plot(sbest$cp, xlab = "Number of Variables", ylab = "Cp", type = "l")
+cp_min = which.min(sbest$cp) # 10
+points(cp_min, sbest$cp[cp_min], col = "red", cex = 2, pch = 20)
+
+plot(sbest$bic, xlab = "Number of Variables", ylab = "BIC", type = "l")
+bic_min = which.min(sbest$bic) # 6
+points(bic_min, sbest$bic[bic_min], col = "red", cex = 2, pch = 20)
+```
+
+Finally, it can be said that the model that minimizes the error and maximizes reliability is the model with 3 factors: Mkt-RF, HML and RMW as it was described on previous analysis of confidence intervals and p-values.
+
+## Chosen multiple linear regression model
+
+
+```{r,warning=FALSE, echo=FALSE}
+lm.fit2 <- lm(ER~HML+RMW+`Mkt-RF`, data = data.full)
+bru=summary(lm.fit2)
+
+x <- data.full[,c(3,5,6)]
+y <- data.full$ER
+
+train<-c(1:96)
+test<-c(97:120)
+
+y.test=y[test]
+y.train=y[train]
+
+lm.pred_train<-predict(lm.fit2,newx=x[train,]) 
+train_mse_lm=mean((lm.pred_train-y.train)^2)
+
+lm.pred<-predict(lm.fit2,newx=x[test,]) 
+test_mse_lm=mean((lm.pred-y.test)^2)
+
+
+```
+
+
+
+
+```{r,warning=FALSE, echo=FALSE}
+f=as.data.frame(bru$coefficients)
+f <- tibble::rownames_to_column(f, "Variable")
+f$Variable[1]="Intercept"
+gt::gt(f)
+
+f=as.data.frame(bru$fstatistic)
+f <- tibble::rownames_to_column(f, "F statistic")
+#f
+gt::gt(f)
+
+```
+
+# Regularization Models
+
+## Ridge
+
+
+````{r Step 8,,warning=FALSE, echo=FALSE}
+#Regularization
+
+x <- model.matrix(ER~.-RF-AAPL.Adjusted-Date, data = data.full)[,-1]
+y <- data.full$ER
+
+#training se and test 
+y.test=y[test]
+y.train=y[train]
+
+#Ridge regression
+grid<-10^seq(10,-2, length = 100)
+ridge.mod <- glmnet(x,y,alpha=0,lambda=grid) 
+plot(ridge.mod)
+
+cv.out<-cv.glmnet(x[train,],y[train], alpha = 0) 
+plot(cv.out)
+
+bestlam<-cv.out$lambda.min 
+
+f=as.data.frame(bestlam)
+gt::gt(f)
+
+
+
+#Test MSE
+ridge.pred<-predict(ridge.mod,s=bestlam,newx=x[test,]) 
+test_mse_ridge=mean((ridge.pred-y.test)^2)
+
+ridge.pred_train<-predict(ridge.mod,s=bestlam,newx=x[train,]) 
+train_mse_ridge=mean((ridge.pred_train-y.train)^2)
+
+rridge=1-(sum((y.train-ridge.pred_train)^2)/sum((y.train-mean(y.train))^2))
+
+#Refit the model using optimal lambda obtained via cross validation
+out=glmnet(x,y,alpha=0)
+
+````
+### Final Ridge model
+
+```{r, warning=FALSE, echo=FALSE}
+
+ridge.coef<-predict(out, type = "coefficients", s=bestlam)[1:7,] 
+f=as.data.frame(ridge.coef)
+f <- tibble::rownames_to_column(f, "Variable")
+f$Variable[1]="Intercept"
+gt::gt(f)
+
+```
+
+
+
+## The Lasso
+
+```{r, warning=FALSE, echo=FALSE}
+lasso.mod <- glmnet(x[train,],y[train],alpha=1,lambda=grid) 
+plot(lasso.mod)
+
+#Using cross validation
+cv.out<-cv.glmnet(x[train,],y[train], alpha = 1) 
+plot(cv.out)
+
+bestlam<-cv.out$lambda.min 
+
+f=as.data.frame(bestlam)
+gt::gt(f)
+
+#Test MSE
+lasso.pred<-predict(lasso.mod,s=bestlam,newx=x[test,]) 
+test_mse_lasso=mean((lasso.pred-y.test)^2)
+
+
+lasso.pred_train<-predict(lasso.mod,s=bestlam,newx=x[train,]) 
+train_mse_lasso=mean((lasso.pred_train-y.train)^2)
+
+rlasso=1-(sum((y.train-lasso.pred_train)^2)/sum((y.train-mean(y.train))^2))
+ 
+```
+
+### Final Lasso model
+
+```{r, warning=FALSE, echo=FALSE}
+out=glmnet(x,y,alpha=1, lambda=grid)
+lasso.coef<-predict(out, type = "coefficients", s=bestlam)[1:7,] 
+f=as.data.frame(lasso.coef)
+f <- tibble::rownames_to_column(f, "Variable")
+f$Variable[1]="Intercept"
+gt::gt(f)
+
+
+```
+
+### Final Lasso model without null coefficients
+
+```{r, warning=FALSE, echo=FALSE}
+
+f=as.data.frame(lasso.coef[lasso.coef!=0])
+f <- tibble::rownames_to_column(f, "Variable")
+f$Variable[1]="Intercept"
+gt::gt(f)
+
+```
+
+As it can be seen, at the end Lasso's resulting factors were the same as the ones that the factor selection process concluded were representative (Mkt-RF,HML, RMW), clearly with different coefficients because of the regularization process.
+
+
+# Models comparison with MSE and R squared
+
+
+`````{r Step 9,warning=FALSE, echo=FALSE}
+
+mse <- data.frame(
+  "Models" = c("Mutiple linear model","Ridge","Lasso"), 
+  "Train MSE" = c(train_mse_lm, train_mse_ridge,train_mse_lasso), 
+  "Test MSE" = c(test_mse_lm, test_mse_ridge,test_mse_lasso),
+  "R squared" = c(bru$r.squared,rridge,rlasso)
+)
+
+#f <- tibble::rownames_to_column(f, "Variable")
+#mse
+gt::gt(mse)
+
+`````
+
+
+# Conclusions
+
+Given the fact that the linear regression model and the Lasso model follow a story of factors selection with statistical basis and have almost 50% R squared, they could be recommended for the implementation of a corporate model that is needed to be presented to a board that could easily understand the concept behind the model. However, given the fact that the linear model has a maximum R squared of almost 50% is not high enough to rely as a model for real trading models that require high predictability but do not require deep understanding of the concept such as the regularization process that, in this case, does not increase the R square versus a non-regularized process like the multiple linear regression but it decreases the training and test MSE though for both Lasso and Ridge.  
+
+
+
